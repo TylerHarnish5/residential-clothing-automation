@@ -2,7 +2,11 @@ from decimal import Decimal
 
 import pytest
 
-from pricing import calculate_item_subtotal, calculate_line_subtotal, calculate_order_total
+from backend.pricing import (
+    calculate_item_subtotal,
+    calculate_line_subtotal,
+    calculate_order_total,
+)
 
 
 def test_pricing_calculates_line_item_and_order_totals() -> None:

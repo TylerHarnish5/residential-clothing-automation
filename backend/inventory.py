@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Iterable
 from uuid import UUID
 
-from orders import Order, OrderStatus, Product
+from .orders import Order, OrderStatus, Product
 
 
 def _require_quantity(quantity: int) -> None:

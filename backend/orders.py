@@ -12,7 +12,7 @@ from decimal import Decimal
 from enum import Enum
 from uuid import UUID, uuid4
 
-from pricing import (
+from .pricing import (
     MoneyInput,
     calculate_item_subtotal,
     calculate_line_subtotal,

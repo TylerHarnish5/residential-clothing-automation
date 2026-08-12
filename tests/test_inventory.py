@@ -2,8 +2,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from inventory import Inventory
-from orders import Order, Product
+from backend.inventory import Inventory
+from backend.orders import Order, Product
 
 
 @pytest.fixture

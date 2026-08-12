@@ -2,7 +2,7 @@ from decimal import Decimal
 
 import pytest
 
-from orders import (
+from backend.orders import (
     Order,
     OrderStatus,
     OrderType,
