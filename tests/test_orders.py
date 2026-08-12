@@ -2,7 +2,15 @@ from decimal import Decimal
 
 import pytest
 
-from orders import Order, OrderStatus, OrderType, Product, money
+from orders import (
+    Order,
+    OrderStatus,
+    OrderType,
+    Product,
+    approve_order,
+    money,
+    validate_order_for_submission,
+)
 
 
 @pytest.fixture
@@ -115,3 +123,25 @@ def test_orders_can_only_be_approved_or_rejected_while_pending() -> None:
 
     with pytest.raises(ValueError, match="pending approval"):
         order.reject()
+
+
+def test_public_validation_function_applies_shipping_budget_rule(shirt: Product) -> None:
+    order = Order("30.00")
+    order.add_item(shirt)
+
+    with pytest.raises(ValueError, match="including shipping"):
+        validate_order_for_submission(order, "10.00")
+
+
+def test_approval_records_the_timestamp_and_requires_a_boolean_decision(shirt: Product) -> None:
+    order = Order("100.00")
+    order.add_item(shirt)
+    order.submit_for_approval("5.00")
+
+    with pytest.raises(TypeError, match="boolean"):
+        approve_order(order, allow_partial_fulfillment=1)  # type: ignore[arg-type]
+
+    approve_order(order, allow_partial_fulfillment=False)
+
+    assert order.status is OrderStatus.APPROVED
+    assert order.approved_at is not None

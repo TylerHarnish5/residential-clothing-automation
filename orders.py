@@ -7,36 +7,18 @@ Those concerns can use these models as the project grows.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from datetime import datetime, timezone
+from decimal import Decimal
 from enum import Enum
-from typing import Union
 from uuid import UUID, uuid4
 
-
-MoneyInput = Union[Decimal, int, str]
-CENT = Decimal("0.01")
-
-
-def money(value: MoneyInput) -> Decimal:
-    """Convert a money value to a non-negative, two-decimal Decimal.
-
-    Floats are intentionally not accepted because their binary precision can
-    produce incorrect invoice totals.
-    """
-
-    if isinstance(value, bool) or isinstance(value, float):
-        raise TypeError("Money must be an int, str, or Decimal; not a float")
-
-    try:
-        amount = Decimal(value)
-    except (InvalidOperation, ValueError) as error:
-        raise ValueError(f"Invalid money value: {value!r}") from error
-
-    if not amount.is_finite() or amount < 0:
-        raise ValueError("Money must be a non-negative finite amount")
-
-    return amount.quantize(CENT, rounding=ROUND_HALF_UP)
-
+from pricing import (
+    MoneyInput,
+    calculate_item_subtotal,
+    calculate_line_subtotal,
+    calculate_order_total,
+    money,
+)
 
 class OrderType(str, Enum):
     NORMAL = "normal"
@@ -97,7 +79,7 @@ class OrderItem:
 
     @property
     def subtotal(self) -> Decimal:
-        return money(self.unit_price * self.quantity)
+        return calculate_line_subtotal(self.unit_price, self.quantity)
 
 
 @dataclass(frozen=True)
@@ -121,6 +103,7 @@ class Order:
     status: OrderStatus = OrderStatus.DRAFT
     shipping_cost: Decimal | None = None
     partial_fulfillment_approved: bool | None = None
+    approved_at: datetime | None = None
 
     def __post_init__(self) -> None:
         self.budget_amount = money(self.budget_amount)
@@ -128,12 +111,12 @@ class Order:
 
     @property
     def item_subtotal(self) -> Decimal:
-        return money(sum((item.subtotal for item in self.items), Decimal("0")))
+        return calculate_item_subtotal(item.subtotal for item in self.items)
 
     @property
     def total(self) -> Decimal:
         shipping = self.shipping_cost if self.shipping_cost is not None else Decimal("0")
-        return money(self.item_subtotal + shipping)
+        return calculate_order_total(self.item_subtotal, shipping)
 
     def add_item(self, product: Product, quantity: int = 1) -> OrderItem:
         """Add an item to a draft, capturing the product's current price."""
@@ -157,7 +140,7 @@ class Order:
 
         self._require_draft()
         proposed_shipping_cost = money(shipping_cost)
-        self._validate_for_submission(proposed_shipping_cost)
+        validate_order_for_submission(self, proposed_shipping_cost)
         self.shipping_cost = proposed_shipping_cost
         self.status = OrderStatus.PENDING_APPROVAL
         return self.invoice()
@@ -165,17 +148,12 @@ class Order:
     def approve(self, *, allow_partial_fulfillment: bool) -> None:
         """Record the Boss's order and partial-fulfillment decision."""
 
-        if self.status is not OrderStatus.PENDING_APPROVAL:
-            raise ValueError("Only orders pending approval can be approved")
-        self.partial_fulfillment_approved = allow_partial_fulfillment
-        self.status = OrderStatus.APPROVED
+        approve_order(self, allow_partial_fulfillment=allow_partial_fulfillment)
 
     def reject(self) -> None:
         """Record the Boss's rejection of an order awaiting approval."""
 
-        if self.status is not OrderStatus.PENDING_APPROVAL:
-            raise ValueError("Only orders pending approval can be rejected")
-        self.status = OrderStatus.REJECTED
+        reject_order(self)
 
     def invoice(self) -> Invoice:
         """Return the single order invoice once its shipping cost is set."""
@@ -193,15 +171,41 @@ class Order:
         if self.status is not OrderStatus.DRAFT:
             raise ValueError("Only draft orders can be edited")
 
-    def _validate_for_submission(self, shipping_cost: Decimal) -> None:
-        unavailable_items = [item.sku for item in self.items if not item.product.is_active]
-        if unavailable_items:
-            unavailable = ", ".join(unavailable_items)
-            raise ValueError(f"Order contains unavailable product(s): {unavailable}")
-        proposed_total = money(self.item_subtotal + shipping_cost)
-        if proposed_total > self.budget_amount:
-            raise ValueError("Order total, including shipping, exceeds the order budget")
-        if self.order_type is OrderType.NORMAL and not self.items:
-            raise ValueError("Normal orders must contain at least one item")
-        if self.order_type is OrderType.NORMAL and proposed_total == Decimal("0.00"):
-            raise ValueError("Normal orders must have a total greater than zero")
+
+
+def validate_order_for_submission(order: Order, shipping_cost: MoneyInput) -> None:
+    """Validate the business rules that apply before Boss approval."""
+
+    unavailable_items = [item.sku for item in order.items if not item.product.is_active]
+    if unavailable_items:
+        unavailable = ", ".join(unavailable_items)
+        raise ValueError(f"Order contains unavailable product(s): {unavailable}")
+
+    proposed_total = calculate_order_total(order.item_subtotal, shipping_cost)
+    if proposed_total > order.budget_amount:
+        raise ValueError("Order total, including shipping, exceeds the order budget")
+    if order.order_type is OrderType.NORMAL and not order.items:
+        raise ValueError("Normal orders must contain at least one item")
+    if order.order_type is OrderType.NORMAL and proposed_total == Decimal("0.00"):
+        raise ValueError("Normal orders must have a total greater than zero")
+
+
+def approve_order(order: Order, *, allow_partial_fulfillment: bool) -> None:
+    """Apply the Boss's approval decision to an order awaiting approval."""
+
+    if order.status is not OrderStatus.PENDING_APPROVAL:
+        raise ValueError("Only orders pending approval can be approved")
+    if not isinstance(allow_partial_fulfillment, bool):
+        raise TypeError("Partial fulfillment approval must be a boolean")
+
+    order.partial_fulfillment_approved = allow_partial_fulfillment
+    order.approved_at = datetime.now(timezone.utc)
+    order.status = OrderStatus.APPROVED
+
+
+def reject_order(order: Order) -> None:
+    """Apply the Boss's rejection decision to an order awaiting approval."""
+
+    if order.status is not OrderStatus.PENDING_APPROVAL:
+        raise ValueError("Only orders pending approval can be rejected")
+    order.status = OrderStatus.REJECTED
