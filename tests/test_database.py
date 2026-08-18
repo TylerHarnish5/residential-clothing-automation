@@ -19,6 +19,8 @@ from backend.db_models import (
     ChangeRequestType,
     FacilityModel,
     InventoryItemModel,
+    OrderModel,
+    ProductModel,
     ResidentModel,
     ShipmentStatus,
     UserModel,
@@ -321,4 +323,91 @@ def test_postgresql_product_round_trip() -> None:
             product = session.get(type(saved), saved_id)
             if product is not None:
                 session.delete(product)
+    engine.dispose()
+
+
+@pytest.mark.skipif(
+    os.getenv("RUN_POSTGRES_TESTS") != "1",
+    reason="Set RUN_POSTGRES_TESTS=1 to run against the configured local PostgreSQL database.",
+)
+def test_postgresql_boss_approval_locks_only_the_order_row() -> None:
+    """PostgreSQL accepts the approval lock even when resident data is loaded."""
+
+    engine = create_database_engine()
+    assert engine.dialect.name == "postgresql"
+    session_factory = create_session_factory(engine)
+    suffix = uuid4().hex[:12].upper()
+    facility_id = resident_id = requester_id = boss_id = product_id = order_id = None
+
+    try:
+        with session_factory.begin() as session:
+            facility = FacilityModel(
+                name=f"PostgreSQL Approval Facility {suffix}",
+                shipping_address="1 PostgreSQL Road",
+            )
+            resident = ResidentModel(facility=facility, full_name="PostgreSQL Resident")
+            requester = UserModel(
+                facility=facility,
+                full_name="PostgreSQL Requester",
+                role=UserRole.AUTHORIZED_REQUESTER.value,
+            )
+            boss = UserModel(full_name="PostgreSQL Boss", role=UserRole.BOSS.value)
+            session.add_all([facility, resident, requester, boss])
+            session.flush()
+
+            product = Product(f"POSTGRES-APPROVAL-{suffix}", "Approval Shirt", "M", "20.00")
+            saved_product = ProductRepository().add(session, product)
+            order = Order("100.00")
+            order.add_item(product)
+            order.submit_for_approval("5.00")
+            saved_order = OrderRepository().add(
+                session, order, resident=resident, requester=requester
+            )
+
+            facility_id = facility.id
+            resident_id = resident.id
+            requester_id = requester.id
+            boss_id = boss.id
+            product_id = saved_product.id
+            order_id = saved_order.id
+
+        with session_factory.begin() as session:
+            boss = session.get(UserModel, boss_id)
+            assert boss is not None
+            approved = OrderWorkflowRepository().approve_order(
+                session,
+                order_id,
+                boss=boss,
+                allow_partial_fulfillment=True,
+            )
+
+            assert approved.status == OrderStatus.APPROVED.value
+            assert approved.approvals[0].decision == "approved"
+
+    finally:
+        with session_factory.begin() as session:
+            if order_id is not None:
+                order = session.get(OrderModel, order_id)
+                if order is not None:
+                    session.delete(order)
+            if product_id is not None:
+                product = session.get(ProductModel, product_id)
+                if product is not None:
+                    session.delete(product)
+            if requester_id is not None:
+                requester = session.get(UserModel, requester_id)
+                if requester is not None:
+                    session.delete(requester)
+            if boss_id is not None:
+                boss = session.get(UserModel, boss_id)
+                if boss is not None:
+                    session.delete(boss)
+            if resident_id is not None:
+                resident = session.get(ResidentModel, resident_id)
+                if resident is not None:
+                    session.delete(resident)
+            if facility_id is not None:
+                facility = session.get(FacilityModel, facility_id)
+                if facility is not None:
+                    session.delete(facility)
     engine.dispose()

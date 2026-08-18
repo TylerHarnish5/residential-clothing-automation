@@ -52,10 +52,22 @@ class ProductRepository:
         return model
 
     def get_domain_product(self, session: Session, sku: str) -> Product:
+        model = self.get_model(session, sku)
+        return Product(model.sku, model.name, model.size, model.unit_price, model.is_active)
+
+    def get_model(self, session: Session, sku: str) -> ProductModel:
+        """Return the persisted catalog product identified by its SKU."""
+
         model = session.scalar(select(ProductModel).where(ProductModel.sku == sku))
         if model is None:
             raise ValueError(f"Unknown product SKU: {sku}")
-        return Product(model.sku, model.name, model.size, model.unit_price, model.is_active)
+        return model
+
+    @staticmethod
+    def list_models(session: Session) -> list[ProductModel]:
+        """Return catalog products in stable SKU order."""
+
+        return session.scalars(select(ProductModel).order_by(ProductModel.sku)).all()
 
 
 class OrderRepository:
@@ -120,16 +132,59 @@ class OrderRepository:
         return model
 
     def get_domain_order(self, session: Session, order_id: UUID) -> Order:
+        return self._to_domain_order(self.get_model(session, order_id))
+
+    @staticmethod
+    def get_model(session: Session, order_id: UUID) -> OrderModel:
+        """Return an order with the relationships needed by API responses."""
+
         statement = (
             select(OrderModel)
             .where(OrderModel.id == order_id)
-            .options(joinedload(OrderModel.items).joinedload(OrderItemModel.product))
+            .options(
+                joinedload(OrderModel.resident),
+                joinedload(OrderModel.requester),
+                selectinload(OrderModel.items).joinedload(OrderItemModel.product),
+                selectinload(OrderModel.invoice),
+            )
         )
         model = session.execute(statement).unique().scalar_one_or_none()
         if model is None:
             raise ValueError(f"Unknown order: {order_id}")
+        return model
 
-        return self._to_domain_order(model)
+    def add_item_to_draft(
+        self, session: Session, order_id: UUID, *, product_sku: str, quantity: int
+    ) -> OrderModel:
+        """Add a current catalog product to a persisted draft order."""
+
+        model = self.get_model(session, order_id)
+        domain_order = self._to_domain_order(model)
+        product = ProductRepository().get_domain_product(session, product_sku)
+        domain_item = domain_order.add_item(product, quantity)
+        product_model = ProductRepository().get_model(session, product_sku)
+        model.items.append(
+            self._order_item_model(domain_item, product_model, len(model.items) + 1)
+        )
+        session.flush()
+        return self.get_model(session, order_id)
+
+    def confirm_draft(
+        self, session: Session, order_id: UUID, *, shipping_cost: Decimal
+    ) -> OrderModel:
+        """Submit a draft order for Boss approval using the domain validation rules."""
+
+        model = self.get_model(session, order_id)
+        domain_order = self._to_domain_order(model)
+        invoice = domain_order.submit_for_approval(shipping_cost)
+        model.status = domain_order.status.value
+        model.invoice = InvoiceModel(
+            item_subtotal=invoice.item_subtotal,
+            shipping_cost=invoice.shipping_cost,
+            total=invoice.total,
+        )
+        session.flush()
+        return self.get_model(session, order_id)
 
     @staticmethod
     def _to_domain_order(model: OrderModel) -> Order:
@@ -465,7 +520,10 @@ class OrderWorkflowRepository:
                 selectinload(OrderModel.invoice),
                 selectinload(OrderModel.approvals),
             )
-            .with_for_update()
+            # PostgreSQL cannot lock the nullable side of the outer join that
+            # ``joinedload(OrderModel.resident)`` creates. Lock only the order
+            # row while still loading the related records needed by the workflow.
+            .with_for_update(of=OrderModel)
         )
         order = session.execute(statement).unique().scalar_one_or_none()
         if order is None:
