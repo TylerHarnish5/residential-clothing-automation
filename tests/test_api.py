@@ -37,9 +37,12 @@ def client() -> Generator[TestClient, None, None]:
             session.close()
 
     app.dependency_overrides[get_session] = override_get_session
+    original_idempotency_session_factory = app.state.idempotency_session_factory
+    app.state.idempotency_session_factory = session_factory
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
+    app.state.idempotency_session_factory = original_idempotency_session_factory
     Base.metadata.drop_all(engine)
     engine.dispose()
 
@@ -98,6 +101,43 @@ def test_duplicate_product_sku_returns_conflict(client: TestClient) -> None:
 
     assert duplicate.status_code == 409
     assert "already exists" in duplicate.json()["detail"]
+
+
+def test_idempotency_key_replays_a_successful_post_without_duplicate_data(client: TestClient) -> None:
+    payload = {"sku": "IDEMPOTENT-SHIRT", "name": "Blue Shirt", "size": "M", "unit_price": "25.00"}
+    headers = {"Idempotency-Key": "create-product-once"}
+
+    first = client.post("/products", json=payload, headers=headers)
+    replay = client.post("/products", json=payload, headers=headers)
+
+    assert first.status_code == 201
+    assert replay.status_code == 201
+    assert replay.json()["id"] == first.json()["id"]
+    assert replay.headers["X-Idempotency-Replayed"] == "true"
+    assert replay.headers["X-Request-ID"]
+    assert len(client.get("/products").json()) == 1
+
+
+def test_idempotency_key_replays_failures_and_rejects_different_request_data(client: TestClient) -> None:
+    create_product(client)
+    headers = {"Idempotency-Key": "duplicate-product-request"}
+    duplicate_payload = {
+        "sku": "SHIRT-M-BLU",
+        "name": "Second Shirt",
+        "size": "L",
+        "unit_price": "20.00",
+    }
+
+    first_failure = client.post("/products", json=duplicate_payload, headers=headers)
+    replayed_failure = client.post("/products", json=duplicate_payload, headers=headers)
+    different_payload = {**duplicate_payload, "sku": "OTHER-SHIRT"}
+    conflict = client.post("/products", json=different_payload, headers=headers)
+
+    assert first_failure.status_code == 409
+    assert replayed_failure.status_code == 409
+    assert replayed_failure.headers["X-Idempotency-Replayed"] == "true"
+    assert conflict.status_code == 409
+    assert "already used" in conflict.json()["detail"]
 
 
 def test_draft_order_items_confirmation_and_retrieval(client: TestClient) -> None:
@@ -230,3 +270,68 @@ def test_inactive_product_blocks_confirmation(client: TestClient) -> None:
 
     assert response.status_code == 400
     assert "unavailable" in response.json()["detail"]
+
+
+def test_boss_approval_reserves_stock_and_creates_a_fulfillment_task(client: TestClient) -> None:
+    resident_id, requester_id = create_order_context(client)
+    boss = client.post("/users", json={"full_name": "Bob Boss", "role": "boss"})
+    create_product(client)
+    assert client.post("/products/SHIRT-M-BLU/inventory", json={"quantity": 1}).status_code == 200
+    order = client.post(
+        "/orders",
+        json={"resident_id": resident_id, "requester_id": requester_id, "budget_amount": "100.00"},
+    )
+    order_id = order.json()["id"]
+    assert client.post(
+        f"/orders/{order_id}/items", json={"product_sku": "SHIRT-M-BLU", "quantity": 1}
+    ).status_code == 200
+    assert client.post(f"/orders/{order_id}/confirm", json={"shipping_cost": "5.00"}).status_code == 200
+
+    approved = client.post(
+        f"/orders/{order_id}/approve",
+        json={"boss_id": boss.json()["id"], "allow_partial_fulfillment": False},
+    )
+    tasks = client.get(f"/orders/{order_id}/fulfillment-tasks")
+    inventory = client.get("/products/SHIRT-M-BLU/inventory")
+
+    assert approved.status_code == 200
+    assert inventory.json()["reserved_quantity"] == 1
+    assert tasks.status_code == 200
+    assert tasks.json()[0]["status"] == "pending"
+    assert tasks.json()[0]["items"][0]["quantity"] == 1
+
+
+def test_restock_creates_later_partial_task_and_tasks_reach_ready_to_ship(client: TestClient) -> None:
+    resident_id, requester_id = create_order_context(client)
+    boss = client.post("/users", json={"full_name": "Bob Boss", "role": "boss"})
+    create_product(client)
+    order = client.post(
+        "/orders",
+        json={"resident_id": resident_id, "requester_id": requester_id, "budget_amount": "100.00"},
+    )
+    order_id = order.json()["id"]
+    assert client.post(
+        f"/orders/{order_id}/items", json={"product_sku": "SHIRT-M-BLU", "quantity": 2}
+    ).status_code == 200
+    assert client.post(f"/orders/{order_id}/confirm", json={"shipping_cost": "5.00"}).status_code == 200
+    assert client.post(
+        f"/orders/{order_id}/approve",
+        json={"boss_id": boss.json()["id"], "allow_partial_fulfillment": True},
+    ).status_code == 200
+
+    assert client.post("/products/SHIRT-M-BLU/inventory", json={"quantity": 1}).status_code == 200
+    assert client.post("/products/SHIRT-M-BLU/inventory", json={"quantity": 1}).status_code == 200
+    tasks = client.get(f"/orders/{order_id}/fulfillment-tasks").json()
+
+    assert len(tasks) == 2
+    assert [task["items"][0]["quantity"] for task in tasks] == [1, 1]
+
+    for task in tasks:
+        for next_status in ("picking", "labeling", "packing", "ready_to_ship"):
+            advanced = client.post(
+                f"/fulfillment-tasks/{task['id']}/advance",
+                json={"next_status": next_status},
+            )
+            assert advanced.status_code == 200
+
+    assert client.get(f"/orders/{order_id}").json()["status"] == "ready_to_ship"
