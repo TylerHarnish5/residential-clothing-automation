@@ -66,11 +66,31 @@ Approved orders are made available to warehouse employees. When stock
 is limited, earlier approved orders are prioritized over later approved
 orders.
 
+### V0 workflow automation
+
+The Boss still approves every order. Immediately after a Boss approval,
+the system automatically reserves available inventory in approval-priority
+order and creates a pending fulfillment task for stock that can be prepared.
+Receiving additional inventory reruns this same allocation and may create a
+later fulfillment task for newly available items.
+
+A fulfillment task is a specific group of reserved order items for warehouse
+staff to pick, label, and pack. It follows the V0 warehouse sequence:
+`pending` → `picking` → `labeling` → `packing` → `ready to ship`.
+
 The Boss decides whether an order with unavailable items should be
 partially fulfilled or withheld until the remaining items are available.
-When partial fulfillment is approved, available items may be prepared
-for shipment and the remaining items are shipped later. No additional
-shipping charge is added to the order.
+When partial fulfillment is approved, a task may be created for available
+items and the remaining items receive a later task after restocking. If
+partial fulfillment is not approved, the system reserves available stock for
+the earlier order but creates no task until all its items are available. No
+additional shipping charge is added to the order.
+
+If the Boss approves an order cancellation, the system stops every fulfillment
+task for that order by marking it `cancelled` and releases its inventory
+reservations. A cancelled task cannot advance through the warehouse workflow.
+This cancellation decision overrides the normal `ready to ship` terminal state
+because V0 does not send packages after that state.
 
 Warehouse workers:
 

@@ -60,6 +60,13 @@ class ShipmentStatus(str, Enum):
     LABELING = "labeling"
     PACKING = "packing"
     READY_TO_SHIP = "ready_to_ship"
+    CANCELLED = "cancelled"
+
+
+class IdempotencyStatus(str, Enum):
+    PROCESSING = "processing"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
 
 
 class FacilityModel(Base):
@@ -71,6 +78,34 @@ class FacilityModel(Base):
 
     residents: Mapped[list[ResidentModel]] = relationship(back_populates="facility")
     users: Mapped[list[UserModel]] = relationship(back_populates="facility")
+
+
+class IdempotencyRecordModel(Base):
+    """Durable result or failure state for one client-supplied POST key."""
+
+    __tablename__ = "idempotency_records"
+    __table_args__ = (
+        Index("ix_idempotency_records_status_created_at", "status", "created_at"),
+        CheckConstraint(
+            "status IN ('processing', 'succeeded', 'failed')",
+            name="ck_idempotency_records_status",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    key: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    method: Mapped[str] = mapped_column(String(10), nullable=False)
+    path: Mapped[str] = mapped_column(String(500), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    response_status: Mapped[Optional[int]] = mapped_column(Integer)
+    response_body: Mapped[Optional[str]] = mapped_column(Text)
+    content_type: Mapped[Optional[str]] = mapped_column(String(100))
+    failure_detail: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
 class ResidentModel(Base):
@@ -288,7 +323,8 @@ class ShipmentModel(Base):
     __tablename__ = "shipments"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('pending', 'picking', 'labeling', 'packing', 'ready_to_ship')",
+            "status IN ('pending', 'picking', 'labeling', 'packing', 'ready_to_ship', "
+            "'cancelled')",
             name="ck_shipments_status",
         ),
     )

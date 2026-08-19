@@ -3,19 +3,46 @@
 from __future__ import annotations
 
 from collections.abc import Generator
+from datetime import datetime
 from decimal import Decimal
-from typing import Literal
+from hashlib import sha256
+from time import perf_counter
 from uuid import UUID
+from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session, sessionmaker
 
 from .database import create_database_engine, create_session_factory
-from .db_models import FacilityModel, OrderModel, ResidentModel, UserModel, UserRole
+from .db_models import (
+    FacilityModel,
+    InventoryItemModel,
+    OrderModel,
+    ResidentModel,
+    ShipmentModel,
+    ShipmentStatus,
+    UserModel,
+    UserRole,
+)
 from .orders import Order, OrderType, Product
-from .repositories import OrderRepository, OrderWorkflowRepository, ProductRepository
+from .repositories import (
+    InventoryRepository,
+    OrderRepository,
+    OrderWorkflowRepository,
+    ProductRepository,
+    ShipmentRepository,
+)
+from .reliability import (
+    IdempotencyConflictError,
+    IdempotencyInProgressError,
+    IdempotencyRepository,
+    configure_application_logging,
+    logger,
+    retry_transient_database_operation,
+)
+from .workflows import FulfillmentAutomation
 
 
 class FacilityCreate(BaseModel):
@@ -67,6 +94,17 @@ class ProductResponse(ProductCreate):
     id: UUID
 
 
+class InventoryStockRequest(BaseModel):
+    quantity: int = Field(gt=0)
+
+
+class InventoryResponse(BaseModel):
+    product_sku: str
+    quantity_on_hand: int
+    reserved_quantity: int
+    available_quantity: int
+
+
 class OrderCreate(BaseModel):
     resident_id: UUID
     requester_id: UUID
@@ -93,6 +131,10 @@ class RejectOrderRequest(BaseModel):
     reason: str | None = None
 
 
+class AdvanceFulfillmentTaskRequest(BaseModel):
+    next_status: ShipmentStatus
+
+
 class OrderItemResponse(BaseModel):
     id: UUID
     sku: str
@@ -107,6 +149,21 @@ class InvoiceResponse(BaseModel):
     item_subtotal: Decimal
     shipping_cost: Decimal
     total: Decimal
+
+
+class FulfillmentTaskItemResponse(BaseModel):
+    order_item_id: UUID
+    sku: str
+    product_name: str
+    quantity: int
+
+
+class FulfillmentTaskResponse(BaseModel):
+    id: UUID
+    order_id: UUID
+    status: ShipmentStatus
+    created_at: datetime
+    items: list[FulfillmentTaskItemResponse]
 
 
 class OrderResponse(BaseModel):
@@ -126,7 +183,9 @@ class OrderResponse(BaseModel):
 
 engine = create_database_engine()
 SessionFactory = create_session_factory(engine)
-app = FastAPI(title="Residential Clothing Automation API", version="0.1.0")
+configure_application_logging()
+app = FastAPI(title="Residential Clothing Automation API", version="0.2.0")
+app.state.idempotency_session_factory = SessionFactory
 
 
 def get_session() -> Generator[Session, None, None]:
@@ -143,12 +202,140 @@ def get_session() -> Generator[Session, None, None]:
         session.close()
 
 
+async def _buffer_response(response: Response) -> Response:
+    """Read a response once so a completed POST can be replayed exactly."""
+
+    body = b"".join([chunk async for chunk in response.body_iterator])
+    return Response(
+        content=body,
+        status_code=response.status_code,
+        headers=dict(response.headers),
+        media_type=response.media_type,
+    )
+
+
+@app.middleware("http")
+async def reliability_middleware(request: Request, call_next) -> Response:
+    """Attach request logs and optional durable idempotency to POST requests."""
+
+    started_at = perf_counter()
+    request_id = request.headers.get("X-Request-ID", str(uuid4()))[:100]
+    idempotency_key = request.headers.get("Idempotency-Key")
+    idempotency_repository: IdempotencyRepository | None = None
+
+    if request.method == "POST" and idempotency_key is not None:
+        if not idempotency_key.strip() or len(idempotency_key) > 255:
+            response = JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"detail": "Idempotency-Key must contain 1 to 255 characters"},
+            )
+            response.headers["X-Request-ID"] = request_id
+            return response
+
+        body = await request.body()
+        request_hash = sha256(body).hexdigest()
+        idempotency_repository = IdempotencyRepository(
+            request.app.state.idempotency_session_factory
+        )
+        try:
+            replay = retry_transient_database_operation(
+                lambda: idempotency_repository.begin(
+                    key=idempotency_key,
+                    method=request.method,
+                    path=request.url.path,
+                    request_hash=request_hash,
+                ),
+                operation_name="idempotency_begin",
+            )
+        except IdempotencyConflictError as error:
+            response = JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": str(error)})
+            response.headers["X-Request-ID"] = request_id
+            return response
+        except IdempotencyInProgressError as error:
+            response = JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": str(error)})
+            response.headers["X-Request-ID"] = request_id
+            return response
+
+        if replay is not None:
+            response = Response(
+                content=replay.body,
+                status_code=replay.status_code,
+                media_type=replay.content_type or "application/json",
+            )
+            response.headers["X-Idempotency-Replayed"] = "true"
+            response.headers["X-Request-ID"] = request_id
+            logger.info(
+                "request_replayed request_id=%s method=%s path=%s status=%s",
+                request_id,
+                request.method,
+                request.url.path,
+                replay.status_code,
+            )
+            return response
+
+    try:
+        response = await call_next(request)
+    except Exception:
+        if idempotency_repository is not None and idempotency_key is not None:
+            try:
+                retry_transient_database_operation(
+                    lambda: idempotency_repository.complete(
+                        key=idempotency_key,
+                        response_status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        response_body='{"detail":"Internal Server Error"}',
+                        content_type="application/json",
+                    ),
+                    operation_name="idempotency_fail",
+                )
+            except Exception:
+                logger.exception("idempotency_failure_recording_failed request_id=%s", request_id)
+        logger.exception(
+            "request_failed request_id=%s method=%s path=%s",
+            request_id,
+            request.method,
+            request.url.path,
+        )
+        raise
+
+    response = await _buffer_response(response)
+    if idempotency_repository is not None and idempotency_key is not None:
+        response_body = response.body.decode("utf-8")
+        try:
+            retry_transient_database_operation(
+                lambda: idempotency_repository.complete(
+                    key=idempotency_key,
+                    response_status=response.status_code,
+                    response_body=response_body,
+                    content_type=response.headers.get("content-type"),
+                ),
+                operation_name="idempotency_complete",
+            )
+        except Exception:
+            logger.exception("idempotency_completion_failed request_id=%s", request_id)
+
+    response.headers["X-Request-ID"] = request_id
+    logger.info(
+        "request_completed request_id=%s method=%s path=%s status=%s duration_ms=%.1f",
+        request_id,
+        request.method,
+        request.url.path,
+        response.status_code,
+        (perf_counter() - started_at) * 1000,
+    )
+    return response
+
+
 @app.exception_handler(ValueError)
 async def domain_validation_error(_request, error: ValueError) -> JSONResponse:
     """Return domain and repository validation errors as clear client responses."""
 
     detail = str(error)
-    conflict_prefixes = ("Only draft orders", "Order is incomplete", "Only orders pending")
+    conflict_prefixes = (
+        "Only draft orders",
+        "Order is incomplete",
+        "Only orders pending",
+        "Shipment status must",
+    )
     response_status = status.HTTP_409_CONFLICT if detail.startswith(conflict_prefixes) else status.HTTP_400_BAD_REQUEST
     return JSONResponse(status_code=response_status, content={"detail": detail})
 
@@ -162,6 +349,35 @@ def _require_model(session: Session, model_type, model_id: UUID, label: str):
 
 def _product_response(product) -> ProductResponse:
     return ProductResponse.model_validate(product)
+
+
+def _inventory_response(product_sku: str, inventory: InventoryItemModel | None) -> InventoryResponse:
+    quantity_on_hand = inventory.quantity_on_hand if inventory else 0
+    reserved_quantity = inventory.reserved_quantity if inventory else 0
+    return InventoryResponse(
+        product_sku=product_sku,
+        quantity_on_hand=quantity_on_hand,
+        reserved_quantity=reserved_quantity,
+        available_quantity=quantity_on_hand - reserved_quantity,
+    )
+
+
+def _fulfillment_task_response(task: ShipmentModel) -> FulfillmentTaskResponse:
+    return FulfillmentTaskResponse(
+        id=task.id,
+        order_id=task.order_id,
+        status=ShipmentStatus(task.status),
+        created_at=task.created_at,
+        items=[
+            FulfillmentTaskItemResponse(
+                order_item_id=item.order_item_id,
+                sku=item.order_item.sku_snapshot,
+                product_name=item.order_item.product_name_snapshot,
+                quantity=item.quantity,
+            )
+            for item in task.items
+        ],
+    )
 
 
 def _order_response(order: OrderModel) -> OrderResponse:
@@ -271,6 +487,34 @@ def get_product(sku: str, session: Session = Depends(get_session)) -> ProductRes
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
 
 
+@app.post("/products/{sku}/inventory", response_model=InventoryResponse)
+def stock_product(
+    sku: str, payload: InventoryStockRequest, session: Session = Depends(get_session)
+) -> InventoryResponse:
+    """Receive stock and automatically allocate approved orders by priority."""
+
+    try:
+        product = ProductRepository().get_model(session, sku)
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+
+    inventory = InventoryRepository().stock_product(session, product, payload.quantity)
+    FulfillmentAutomation().process(session)
+    return _inventory_response(sku, inventory)
+
+
+@app.get("/products/{sku}/inventory", response_model=InventoryResponse)
+def get_inventory(sku: str, session: Session = Depends(get_session)) -> InventoryResponse:
+    """Return current stock, reservations, and unreserved available quantity."""
+
+    try:
+        product = ProductRepository().get_model(session, sku)
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+
+    return _inventory_response(sku, product.inventory_item)
+
+
 @app.post("/orders", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)
 def create_order(payload: OrderCreate, session: Session = Depends(get_session)) -> OrderResponse:
     resident = _require_model(session, ResidentModel, payload.resident_id, "resident")
@@ -330,11 +574,40 @@ def approve_order(
             boss=boss,
             allow_partial_fulfillment=payload.allow_partial_fulfillment,
         )
+        FulfillmentAutomation().process(session)
     except ValueError as error:
         if str(error).startswith("Unknown order"):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
         raise
     return _order_response(OrderRepository.get_model(session, order.id))
+
+
+@app.get("/orders/{order_id}/fulfillment-tasks", response_model=list[FulfillmentTaskResponse])
+def list_fulfillment_tasks(
+    order_id: UUID, session: Session = Depends(get_session)
+) -> list[FulfillmentTaskResponse]:
+    """List the automatically created warehouse tasks for one order."""
+
+    _require_model(session, OrderModel, order_id, "order")
+    tasks = ShipmentRepository.list_for_order(session, order_id)
+    return [_fulfillment_task_response(task) for task in tasks]
+
+
+@app.post("/fulfillment-tasks/{task_id}/advance", response_model=FulfillmentTaskResponse)
+def advance_fulfillment_task(
+    task_id: UUID,
+    payload: AdvanceFulfillmentTaskRequest,
+    session: Session = Depends(get_session),
+) -> FulfillmentTaskResponse:
+    """Advance warehouse work through picking, labeling, packing, and ready to ship."""
+
+    try:
+        task = ShipmentRepository().advance_status(session, task_id, payload.next_status)
+    except ValueError as error:
+        if str(error).startswith("Unknown shipment"):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        raise
+    return _fulfillment_task_response(task)
 
 
 @app.post("/orders/{order_id}/reject", response_model=OrderResponse)

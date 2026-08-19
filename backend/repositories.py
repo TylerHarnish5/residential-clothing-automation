@@ -502,6 +502,7 @@ class OrderWorkflowRepository:
         )
         if approved and change_request.request_type == ChangeRequestType.CANCELLATION.value:
             order = self._get_order(session, change_request.order_id)
+            ShipmentRepository().cancel_order_tasks(session, order.id)
             InventoryRepository().release_order_reservations(session, order)
             order.status = OrderStatus.CANCELLED.value
 
@@ -540,6 +541,46 @@ class ShipmentRepository:
         ShipmentStatus.LABELING.value: ShipmentStatus.PACKING.value,
         ShipmentStatus.PACKING.value: ShipmentStatus.READY_TO_SHIP.value,
     }
+
+    def create_task_for_allocation(
+        self, session: Session, allocation: OrderAllocation
+    ) -> ShipmentModel | None:
+        """Create pending warehouse work for stock newly reserved to one order.
+
+        The Boss's partial-fulfillment decision is already captured in the
+        allocation. A withheld incomplete order receives no task; a permitted
+        partial order receives a task only for its newly reservable quantities.
+        """
+
+        if not allocation.can_prepare_for_shipment:
+            return None
+
+        order = self._get_order(session, allocation.order_id)
+        planned_quantities = self._shipped_quantities(order)
+        quantities: dict[UUID, int] = {}
+
+        for item in order.items:
+            reserved = item.inventory_reservation.quantity if item.inventory_reservation else 0
+            unplanned = reserved - planned_quantities.get(item.id, 0)
+            if unplanned > 0:
+                quantities[item.id] = unplanned
+
+        if not quantities:
+            return None
+
+        return self.create_shipment(session, order.id, quantities)
+
+    @staticmethod
+    def list_for_order(session: Session, order_id: UUID) -> list[ShipmentModel]:
+        """Return fulfillment tasks for an order in creation order."""
+
+        statement = (
+            select(ShipmentModel)
+            .where(ShipmentModel.order_id == order_id)
+            .order_by(ShipmentModel.created_at, ShipmentModel.id)
+            .options(selectinload(ShipmentModel.items).selectinload(ShipmentItemModel.order_item))
+        )
+        return session.scalars(statement).all()
 
     def create_shipment(
         self, session: Session, order_id: UUID, quantities: Mapping[UUID, int]
@@ -593,6 +634,21 @@ class ShipmentRepository:
             self._mark_order_ready_if_complete(session, shipment.order)
         session.flush()
         return shipment
+
+    @staticmethod
+    def cancel_order_tasks(session: Session, order_id: UUID) -> list[ShipmentModel]:
+        """Stop every fulfillment task when the Boss approves an order cancellation."""
+
+        tasks = session.scalars(
+            select(ShipmentModel)
+            .where(ShipmentModel.order_id == order_id)
+            .where(ShipmentModel.status != ShipmentStatus.CANCELLED.value)
+            .with_for_update()
+        ).all()
+        for task in tasks:
+            task.status = ShipmentStatus.CANCELLED.value
+        session.flush()
+        return tasks
 
     @staticmethod
     def _get_order(session: Session, order_id: UUID) -> OrderModel:

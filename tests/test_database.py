@@ -4,7 +4,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import event, inspect
+from sqlalchemy import event, inspect, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -18,6 +18,8 @@ from backend.db_models import (
     ChangeRequestStatus,
     ChangeRequestType,
     FacilityModel,
+    IdempotencyRecordModel,
+    IdempotencyStatus,
     InventoryItemModel,
     OrderModel,
     ProductModel,
@@ -34,6 +36,8 @@ from backend.repositories import (
     ProductRepository,
     ShipmentRepository,
 )
+from backend.reliability import IdempotencyRepository
+from backend.workflows import FulfillmentAutomation
 
 
 @pytest.fixture
@@ -164,6 +168,44 @@ def test_database_url_reads_an_environment_value(monkeypatch: pytest.MonkeyPatch
     assert get_database_url() == database_url
 
 
+def test_idempotency_failure_state_is_persisted_and_replayed(session: Session) -> None:
+    session_factory = create_session_factory(session.get_bind())
+    repository = IdempotencyRepository(session_factory)
+    key = "failed-product-request"
+
+    assert repository.begin(
+        key=key,
+        method="POST",
+        path="/products",
+        request_hash="a" * 64,
+    ) is None
+    repository.complete(
+        key=key,
+        response_status=400,
+        response_body='{"detail":"Invalid product"}',
+        content_type="application/json",
+    )
+
+    with session_factory() as read_session:
+        stored = read_session.scalar(
+            select(IdempotencyRecordModel).where(IdempotencyRecordModel.key == key)
+        )
+        assert stored is not None
+        assert stored.status == IdempotencyStatus.FAILED.value
+        assert stored.failure_detail == '{"detail":"Invalid product"}'
+
+    replay = repository.begin(
+        key=key,
+        method="POST",
+        path="/products",
+        request_hash="a" * 64,
+    )
+
+    assert replay is not None
+    assert replay.status_code == 400
+    assert replay.body == '{"detail":"Invalid product"}'
+
+
 def pending_order(session: Session, product: Product, resident: ResidentModel, requester: UserModel):
     product_repository = ProductRepository()
     try:
@@ -230,6 +272,11 @@ def test_approved_cancellation_releases_persisted_inventory_reservations(
     inventory = InventoryRepository()
     inventory.stock_product(session, stored_order.items[0].product, 2)
     inventory.reserve(session, stored_order.items[0], 2)
+    shipments = ShipmentRepository()
+    task = shipments.create_shipment(
+        session, stored_order.id, {stored_order.items[0].id: 2}
+    )
+    shipments.advance_status(session, task.id, ShipmentStatus.PICKING)
 
     change_request = workflow.request_change(
         session,
@@ -244,6 +291,9 @@ def test_approved_cancellation_releases_persisted_inventory_reservations(
     assert decided.status == ChangeRequestStatus.APPROVED.value
     assert stored_order.status == OrderStatus.CANCELLED.value
     assert stored_order.items[0].product.inventory_item.reserved_quantity == 0
+    assert task.status == ShipmentStatus.CANCELLED.value
+    with pytest.raises(ValueError, match="Shipment status must follow"):
+        shipments.advance_status(session, task.id, ShipmentStatus.LABELING)
 
 
 def test_database_allocation_prioritizes_earlier_boss_approval(
@@ -294,6 +344,51 @@ def test_shipment_requires_reserved_stock_and_reaches_ready_to_ship(
 
     assert shipment.status == ShipmentStatus.READY_TO_SHIP.value
     assert stored_order.status == OrderStatus.READY_TO_SHIP.value
+
+
+def test_automation_withholds_an_incomplete_order_until_all_stock_is_reserved(
+    session: Session, facility_with_people: tuple[ResidentModel, UserModel, UserModel]
+) -> None:
+    resident, requester, boss = facility_with_people
+    product = Product("JACKET-M-TAN", "Tan Jacket", "M", "40.00")
+    stored_order = pending_order(session, product, resident, requester)
+    workflow = OrderWorkflowRepository()
+    workflow.approve_order(session, stored_order.id, boss=boss, allow_partial_fulfillment=False)
+
+    inventory = InventoryRepository()
+    inventory.stock_product(session, stored_order.items[0].product, 1)
+    first_run = FulfillmentAutomation().process(session)
+
+    assert stored_order.items[0].inventory_reservation is not None
+    assert stored_order.items[0].inventory_reservation.quantity == 1
+    assert first_run == []
+
+    inventory.stock_product(session, stored_order.items[0].product, 1)
+    second_run = FulfillmentAutomation().process(session)
+
+    assert len(second_run) == 1
+    assert second_run[0].status == ShipmentStatus.PENDING.value
+    assert second_run[0].items[0].quantity == 2
+
+
+def test_automation_creates_a_later_task_when_partial_order_is_restocked(
+    session: Session, facility_with_people: tuple[ResidentModel, UserModel, UserModel]
+) -> None:
+    resident, requester, boss = facility_with_people
+    product = Product("SWEATER-M-BLU", "Blue Sweater", "M", "30.00")
+    stored_order = pending_order(session, product, resident, requester)
+    workflow = OrderWorkflowRepository()
+    workflow.approve_order(session, stored_order.id, boss=boss, allow_partial_fulfillment=True)
+
+    inventory = InventoryRepository()
+    inventory.stock_product(session, stored_order.items[0].product, 1)
+    first_run = FulfillmentAutomation().process(session)
+    inventory.stock_product(session, stored_order.items[0].product, 1)
+    second_run = FulfillmentAutomation().process(session)
+
+    assert first_run[0].items[0].quantity == 1
+    assert second_run[0].items[0].quantity == 1
+    assert len(ShipmentRepository.list_for_order(session, stored_order.id)) == 2
 
 
 @pytest.mark.skipif(
@@ -357,6 +452,7 @@ def test_postgresql_boss_approval_locks_only_the_order_row() -> None:
 
             product = Product(f"POSTGRES-APPROVAL-{suffix}", "Approval Shirt", "M", "20.00")
             saved_product = ProductRepository().add(session, product)
+            InventoryRepository().stock_product(session, saved_product, quantity=1)
             order = Order("100.00")
             order.add_item(product)
             order.submit_for_approval("5.00")
@@ -380,9 +476,12 @@ def test_postgresql_boss_approval_locks_only_the_order_row() -> None:
                 boss=boss,
                 allow_partial_fulfillment=True,
             )
+            created_tasks = FulfillmentAutomation().process(session)
 
             assert approved.status == OrderStatus.APPROVED.value
             assert approved.approvals[0].decision == "approved"
+            assert len(created_tasks) == 1
+            assert created_tasks[0].status == ShipmentStatus.PENDING.value
 
     finally:
         with session_factory.begin() as session:
