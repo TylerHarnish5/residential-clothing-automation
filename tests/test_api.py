@@ -158,10 +158,19 @@ def test_draft_order_items_confirmation_and_retrieval(client: TestClient) -> Non
     assert item_added.json()["items"][0]["unit_price"] == "25.00"
     assert item_added.json()["total"] == "50.00"
 
+    merged_item = client.post(
+        f"/orders/{order_id}/items", json={"product_sku": "SHIRT-M-BLU", "quantity": 1}
+    )
+    assert merged_item.status_code == 200
+    assert len(merged_item.json()["items"]) == 1
+    assert merged_item.json()["items"][0]["quantity"] == 3
+    assert merged_item.json()["items"][0]["subtotal"] == "75.00"
+
     confirmed = client.post(f"/orders/{order_id}/confirm", json={"shipping_cost": "10.00"})
     assert confirmed.status_code == 200
     assert confirmed.json()["status"] == "pending_approval"
-    assert confirmed.json()["invoice"]["total"] == "60.00"
+    assert confirmed.json()["total"] == "85.00"
+    assert confirmed.json()["invoice"]["total"] == "85.00"
 
     retrieved = client.get(f"/orders/{order_id}")
     assert retrieved.status_code == 200
@@ -335,3 +344,21 @@ def test_restock_creates_later_partial_task_and_tasks_reach_ready_to_ship(client
             assert advanced.status_code == 200
 
     assert client.get(f"/orders/{order_id}").json()["status"] == "ready_to_ship"
+
+
+def test_operational_frontend_and_assets_are_served(client: TestClient) -> None:
+    homepage = client.get("/")
+    stylesheet = client.get("/static/styles.css")
+    script = client.get("/static/app.js")
+
+    assert homepage.status_code == 200
+    assert "Operations console" in homepage.text
+    assert 'id="summary-item-list"' in homepage.text
+    assert stylesheet.status_code == 200
+    assert "--navy" in stylesheet.text
+    assert "nav { display: flex; overflow-x: auto; }" in stylesheet.text
+    assert script.status_code == 200
+    assert "Idempotency-Key" in script.text
+    assert script.text.index("const data = new FormData(form);") < script.text.index(
+        "disableDuring(form, true);"
+    )

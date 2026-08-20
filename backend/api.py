@@ -6,12 +6,15 @@ from collections.abc import Generator
 from datetime import datetime
 from decimal import Decimal
 from hashlib import sha256
+from pathlib import Path
 from time import perf_counter
 from uuid import UUID
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -186,6 +189,8 @@ SessionFactory = create_session_factory(engine)
 configure_application_logging()
 app = FastAPI(title="Residential Clothing Automation API", version="0.2.0")
 app.state.idempotency_session_factory = SessionFactory
+STATIC_DIRECTORY = Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=STATIC_DIRECTORY), name="static")
 
 
 def get_session() -> Generator[Session, None, None]:
@@ -424,6 +429,13 @@ def health_check() -> dict[str, str]:
     """Return a simple application-process health response."""
 
     return {"status": "ok"}
+
+
+@app.get("/", include_in_schema=False)
+def operational_frontend() -> FileResponse:
+    """Serve the lightweight operational interface for local V0 use."""
+
+    return FileResponse(STATIC_DIRECTORY / "index.html")
 
 
 @app.post("/facilities", response_model=FacilityResponse, status_code=status.HTTP_201_CREATED)

@@ -162,10 +162,16 @@ class OrderRepository:
         domain_order = self._to_domain_order(model)
         product = ProductRepository().get_domain_product(session, product_sku)
         domain_item = domain_order.add_item(product, quantity)
-        product_model = ProductRepository().get_model(session, product_sku)
-        model.items.append(
-            self._order_item_model(domain_item, product_model, len(model.items) + 1)
-        )
+        matching_items = [item for item in model.items if item.sku_snapshot == product_sku]
+        if matching_items:
+            matching_items[0].quantity = domain_item.quantity
+            for duplicate_item in matching_items[1:]:
+                model.items.remove(duplicate_item)
+        else:
+            product_model = ProductRepository().get_model(session, product_sku)
+            model.items.append(
+                self._order_item_model(domain_item, product_model, len(model.items) + 1)
+            )
         session.flush()
         return self.get_model(session, order_id)
 
