@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import logging
-import os
 from time import sleep
 from typing import TypeVar
 
@@ -15,7 +15,6 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from .db_models import IdempotencyRecordModel, IdempotencyStatus
-
 
 logger = logging.getLogger("residential_clothing")
 T = TypeVar("T")

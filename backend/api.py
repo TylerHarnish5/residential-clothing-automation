@@ -8,15 +8,13 @@ from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
 from time import perf_counter
-from uuid import UUID
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
-from fastapi.responses import JSONResponse
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session
 
 from .database import create_database_engine, create_session_factory
 from .db_models import (
@@ -30,13 +28,6 @@ from .db_models import (
     UserRole,
 )
 from .orders import Order, OrderType, Product
-from .repositories import (
-    InventoryRepository,
-    OrderRepository,
-    OrderWorkflowRepository,
-    ProductRepository,
-    ShipmentRepository,
-)
 from .reliability import (
     IdempotencyConflictError,
     IdempotencyInProgressError,
@@ -44,6 +35,13 @@ from .reliability import (
     configure_application_logging,
     logger,
     retry_transient_database_operation,
+)
+from .repositories import (
+    InventoryRepository,
+    OrderRepository,
+    OrderWorkflowRepository,
+    ProductRepository,
+    ShipmentRepository,
 )
 from .workflows import FulfillmentAutomation
 

@@ -1,8 +1,7 @@
 """Small, reusable pricing functions for orders and invoices."""
 
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Iterable, Union
-
 
 MoneyInput = Union[Decimal, int, str]
 CENT = Decimal("0.01")
