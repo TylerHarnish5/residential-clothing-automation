@@ -81,6 +81,14 @@ class OrderItem:
     def subtotal(self) -> Decimal:
         return calculate_line_subtotal(self.unit_price, self.quantity)
 
+    def with_quantity(self, quantity: int) -> OrderItem:
+        """Return the same item snapshot with a different quantity."""
+
+        item = OrderItem(product=self.product, quantity=quantity)
+        for attribute in ("sku", "product_name", "size", "unit_price"):
+            object.__setattr__(item, attribute, getattr(self, attribute))
+        return item
+
 
 @dataclass(frozen=True)
 class Invoice:
@@ -119,15 +127,37 @@ class Order:
         return calculate_order_total(self.item_subtotal, shipping)
 
     def add_item(self, product: Product, quantity: int = 1) -> OrderItem:
-        """Add an item to a draft, capturing the product's current price."""
+        """Add to one draft line per SKU, preserving its first locked price."""
 
         self._require_draft()
         item = OrderItem(product=product, quantity=quantity)
-        if self.item_subtotal + item.subtotal > self.budget_amount:
+        matching_items = [
+            (index, existing_item)
+            for index, existing_item in enumerate(self.items)
+            if existing_item.sku == item.sku
+        ]
+        if matching_items:
+            first_index, first_item = matching_items[0]
+            merged_item = first_item.with_quantity(
+                sum(existing_item.quantity for _, existing_item in matching_items) + item.quantity
+            )
+            replaced_subtotal = sum(existing_item.subtotal for _, existing_item in matching_items)
+            proposed_subtotal = self.item_subtotal - replaced_subtotal + merged_item.subtotal
+        else:
+            first_index = None
+            merged_item = item
+            proposed_subtotal = self.item_subtotal + item.subtotal
+
+        if proposed_subtotal > self.budget_amount:
             raise ValueError("Order items would exceed the order budget")
 
-        self.items.append(item)
-        return item
+        if first_index is None:
+            self.items.append(merged_item)
+        else:
+            self.items[first_index] = merged_item
+            for index, _ in reversed(matching_items[1:]):
+                del self.items[index]
+        return merged_item
 
     def remove_item(self, item: OrderItem) -> None:
         """Remove an item from a draft order."""

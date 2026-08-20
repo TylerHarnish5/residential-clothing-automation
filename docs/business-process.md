@@ -32,6 +32,9 @@ from the catalog. A product's unit price is locked when it is added to
 the draft. If the draft is abandoned and redone, the new draft uses the
 current catalog prices.
 
+A draft has one line per product SKU. Selecting the same SKU again
+increases that line's quantity and keeps the original locked unit price.
+
 The order total includes clothing and a single shipping charge. Shipping
 is set when the order is submitted. The resident receives one invoice
 per order, so later partial shipments do not add another shipping charge.

@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Operational workspace for residential clothing orders." />
+    <title>Distinct Square | Operations</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#workspace">Skip to workspace</a>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Primary navigation">
+        <a class="brand" href="#overview" aria-label="Distinct Square operations home">
+          <span class="brand-mark">DS</span>
+          <span><strong>Distinct Square</strong><small>Operations</small></span>
+        </a>
+        <nav>
+          <a class="nav-link active" href="#overview">Overview</a>
+          <a class="nav-link" href="#setup">Setup</a>
+          <a class="nav-link" href="#catalog">Catalog &amp; stock</a>
+          <a class="nav-link" href="#orders">Order desk</a>
+          <a class="nav-link" href="#warehouse">Warehouse</a>
+        </nav>
+        <div class="sidebar-note">
+          <span class="eyebrow">V0 workflow</span>
+          Boss approval triggers inventory allocation and warehouse work.
+        </div>
+      </aside>
+
+      <main id="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Residential clothing workflow</p>
+            <h1>Operations console</h1>
+          </div>
+          <div class="connection" id="connection-status" role="status">
+            <span class="status-dot"></span> Checking API
+          </div>
+        </header>
+
+        <section id="overview" class="hero-card">
+          <div>
+            <p class="eyebrow">Start here</p>
+            <h2>Move one resident order from setup to ready to ship.</h2>
+            <p>
+              Create the facility, requester, resident, and catalog item. Build a draft,
+              submit it for approval, then let the warehouse complete its fulfillment task.
+            </p>
+          </div>
+          <div class="workflow-steps" aria-label="Workflow stages">
+            <span>1 Setup</span><i></i><span>2 Draft</span><i></i><span>3 Approve</span><i></i><span>4 Fulfill</span>
+          </div>
+        </section>
+
+        <section class="context-strip" aria-label="Current workspace IDs">
+          <div><span>Facility</span><strong id="current-facility">Not set</strong></div>
+          <div><span>Resident</span><strong id="current-resident">Not set</strong></div>
+          <div><span>Requester</span><strong id="current-requester">Not set</strong></div>
+          <div><span>Boss</span><strong id="current-boss">Not set</strong></div>
+          <div><span>Order</span><strong id="current-order">Not set</strong></div>
+          <button class="quiet-button" id="clear-workspace" type="button">Clear saved IDs</button>
+        </section>
+
+        <section id="setup" class="section-block">
+          <div class="section-heading">
+            <div><p class="eyebrow">01 / Setup</p><h2>People and facility</h2></div>
+            <p>Create these records once, then their IDs are saved in this browser for the next steps.</p>
+          </div>
+          <div class="card-grid three-up">
+            <form class="panel" id="facility-form">
+              <h3>Create facility</h3>
+              <label>Facility name<input name="name" required maxlength="200" placeholder="Maple House" /></label>
+              <label>Shipping address<textarea name="shipping_address" required placeholder="1 Maple Road"></textarea></label>
+              <button type="submit">Save facility</button>
+            </form>
+
+            <form class="panel" id="user-form">
+              <h3>Create user</h3>
+              <label>Full name<input name="full_name" required maxlength="200" placeholder="Fran Facility Staff" /></label>
+              <label>Role
+                <select name="role" id="user-role">
+                  <option value="authorized_requester">Authorized requester</option>
+                  <option value="boss">Boss</option>
+                  <option value="warehouse_worker">Warehouse worker</option>
+                  <option value="internal_administrator">Internal administrator</option>
+                </select>
+              </label>
+              <label>Facility ID <input name="facility_id" id="user-facility-id" placeholder="Required for requester" /></label>
+              <button type="submit">Save user</button>
+            </form>
+
+            <form class="panel" id="resident-form">
+              <h3>Create resident</h3>
+              <label>Facility ID<input name="facility_id" id="resident-facility-id" required /></label>
+              <label>Resident name<input name="full_name" required maxlength="200" placeholder="Ada Resident" /></label>
+              <button type="submit">Save resident</button>
+            </form>
+          </div>
+        </section>
+
+        <section id="catalog" class="section-block">
+          <div class="section-heading">
+            <div><p class="eyebrow">02 / Catalog</p><h2>Products and inventory</h2></div>
+            <button class="quiet-button" id="refresh-catalog" type="button">Refresh catalog</button>
+          </div>
+          <div class="split-layout">
+            <form class="panel" id="product-form">
+              <h3>Add catalog item</h3>
+              <div class="field-row"><label>SKU<input name="sku" required maxlength="100" placeholder="SHIRT-M-BLU" /></label><label>Size<input name="size" required maxlength="50" placeholder="M" /></label></div>
+              <label>Product name<input name="name" required maxlength="200" placeholder="Blue shirt" /></label>
+              <label>Unit price<input name="unit_price" required inputmode="decimal" placeholder="25.00" /></label>
+              <label class="check-label"><input name="is_active" type="checkbox" checked /> Available for orders</label>
+              <button type="submit">Add product</button>
+            </form>
+            <form class="panel accent-panel" id="stock-form">
+              <h3>Receive inventory</h3>
+              <p class="helper-text">Stocking a product automatically allocates approved orders by priority.</p>
+              <label>Product SKU<input name="sku" id="stock-sku" required placeholder="SHIRT-M-BLU" /></label>
+              <label>Quantity received<input name="quantity" type="number" min="1" required placeholder="10" /></label>
+              <button type="submit">Receive stock</button>
+            </form>
+          </div>
+          <div class="table-card"><div class="table-heading"><h3>Catalog</h3><span id="catalog-count">0 items</span></div><div id="catalog-table" class="catalog-table empty-state">Refresh the catalog to view products.</div></div>
+        </section>
+
+        <section id="orders" class="section-block">
+          <div class="section-heading"><div><p class="eyebrow">03 / Order desk</p><h2>Draft, submit, and approve</h2></div><p>Each resident order has its own fixed budget. Clothing plus shipping cannot exceed it.</p></div>
+          <div class="card-grid two-up">
+            <form class="panel" id="order-form">
+              <h3>Create draft order</h3>
+              <label>Resident ID<input name="resident_id" id="order-resident-id" required /></label>
+              <label>Requester ID<input name="requester_id" id="order-requester-id" required /></label>
+              <div class="field-row"><label>Budget<input name="budget_amount" required inputmode="decimal" placeholder="100.00" /></label><label>Order type<select name="order_type"><option value="normal">Normal</option><option value="donation">Donation</option><option value="compensatory">Compensatory</option></select></label></div>
+              <button type="submit">Create draft</button>
+            </form>
+            <div class="panel order-summary" id="order-summary">
+              <div class="summary-heading"><h3>Current order</h3><span class="status-pill neutral">No order loaded</span></div>
+              <p class="helper-text">Create a draft or use the lookup below to load an existing order.</p>
+              <dl><div><dt>Items</dt><dd id="summary-items">—</dd></div><div><dt>Clothing</dt><dd id="summary-subtotal">—</dd></div><div><dt>Invoice total</dt><dd id="summary-total">—</dd></div></dl>
+              <div class="summary-line-items">
+                <h4>Order items</h4>
+                <ul id="summary-item-list"><li class="empty-line-items">Add items to see the draft take shape here.</li></ul>
+              </div>
+            </div>
+          </div>
+          <div class="card-grid three-up action-grid">
+            <form class="panel compact" id="item-form"><h3>Add item</h3><label>Order ID<input name="order_id" class="order-id-input" required /></label><label>SKU<input name="product_sku" required placeholder="SHIRT-M-BLU" /></label><label>Quantity<input name="quantity" type="number" min="1" required value="1" /></label><button type="submit">Add to draft</button></form>
+            <form class="panel compact" id="confirm-form"><h3>Submit for approval</h3><label>Order ID<input name="order_id" class="order-id-input" required /></label><label>Shipping cost<input name="shipping_cost" required inputmode="decimal" placeholder="5.00" /></label><p class="helper-text">Shipping is charged once and becomes part of the invoice.</p><button type="submit">Confirm order</button></form>
+            <form class="panel compact" id="approval-form"><h3>Boss decision</h3><label>Order ID<input name="order_id" class="order-id-input" required /></label><label>Boss ID<input name="boss_id" id="approval-boss-id" required /></label><label class="check-label"><input name="allow_partial_fulfillment" type="checkbox" /> Allow partial fulfillment</label><div class="button-row"><button type="submit">Approve</button><button class="danger-button" id="reject-order" type="button">Reject</button></div></form>
+          </div>
+          <form class="lookup-bar" id="order-lookup-form"><label>Load order by ID <input name="order_id" class="order-id-input" required placeholder="Paste an existing order ID" /></label><button type="submit">Load order</button></form>
+        </section>
+
+        <section id="warehouse" class="section-block">
+          <div class="section-heading"><div><p class="eyebrow">04 / Warehouse</p><h2>Fulfillment tasks</h2></div><p>Approved and reserved items become warehouse work automatically.</p></div>
+          <div class="warehouse-toolbar"><label>Order ID <input id="task-order-id" class="order-id-input" placeholder="Current order ID" /></label><button id="load-tasks" type="button">Load tasks</button></div>
+          <div id="task-list" class="task-grid empty-state">Load an order to see its fulfillment tasks.</div>
+        </section>
+      </main>
+    </div>
+    <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

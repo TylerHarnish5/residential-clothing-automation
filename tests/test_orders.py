@@ -40,6 +40,19 @@ def test_order_item_snapshots_catalog_details_and_price(shirt: Product) -> None:
     assert item.subtotal == Decimal("50.00")
 
 
+def test_adding_the_same_sku_merges_the_draft_line_at_its_locked_price(shirt: Product) -> None:
+    order = Order("200.00")
+    order.add_item(shirt, quantity=5)
+    shirt.unit_price = Decimal("30.00")
+
+    merged_item = order.add_item(shirt, quantity=1)
+
+    assert len(order.items) == 1
+    assert merged_item.quantity == 6
+    assert merged_item.unit_price == Decimal("25.00")
+    assert merged_item.subtotal == Decimal("150.00")
+
+
 def test_invoice_total_includes_the_one_fixed_shipping_charge(shirt: Product) -> None:
     order = Order("100.00")
     order.add_item(shirt, quantity=2)
