@@ -4,7 +4,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import event, inspect, select
+from sqlalchemy import event, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -29,6 +29,7 @@ from backend.db_models import (
     UserRole,
 )
 from backend.orders import Order, OrderStatus, Product
+from backend.reliability import IdempotencyRepository
 from backend.repositories import (
     InventoryRepository,
     OrderRepository,
@@ -36,7 +37,6 @@ from backend.repositories import (
     ProductRepository,
     ShipmentRepository,
 )
-from backend.reliability import IdempotencyRepository
 from backend.workflows import FulfillmentAutomation
 
 

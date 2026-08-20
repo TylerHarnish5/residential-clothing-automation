@@ -12,7 +12,6 @@ from dotenv import load_dotenv
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-
 DEFAULT_DATABASE_URL = (
     "postgresql+psycopg://postgres:postgres@localhost:5432/residential_clothing"
 )

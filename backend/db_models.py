@@ -13,17 +13,15 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
-    Integer,
     Index,
+    Integer,
     Numeric,
     String,
     Text,
-    Uuid,
     UniqueConstraint,
+    Uuid,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-
-from .orders import OrderStatus, OrderType
 
 
 class Base(DeclarativeBase):

@@ -20,6 +20,7 @@ from .pricing import (
     money,
 )
 
+
 class OrderType(str, Enum):
     NORMAL = "normal"
     DONATION = "donation"

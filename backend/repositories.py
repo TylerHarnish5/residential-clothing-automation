@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Mapping
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from .db_models import (
