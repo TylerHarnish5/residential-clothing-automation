@@ -5,6 +5,8 @@ __pycache__/
 .venv/
 venv/
 .env
+.env.aws
+app.env
 
 # Node
 node_modules/

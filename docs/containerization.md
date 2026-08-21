@@ -52,5 +52,7 @@ docker compose down -v
 
 ## V0 boundary
 
-This is a local development and portfolio setup. It does not add a registry,
-production image publishing, cloud deployment, or secret-management service.
+This Compose file is for local development. It does not provision cloud
+resources, publish an image to a registry, or manage cloud secrets. The
+separate [AWS deployment preparation guide](deployment.md) describes the
+manual Milestone 10 portfolio deployment path.

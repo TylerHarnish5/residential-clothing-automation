@@ -20,3 +20,10 @@ and local commands.
 
 Docker Compose can start the FastAPI application and a separate local
 PostgreSQL database with one command. See [containerization documentation](docs/containerization.md).
+
+## AWS deployment preparation
+
+Milestone 10 adds a low-cost AWS deployment plan for one EC2 application
+instance and one private RDS PostgreSQL instance. It does not provision AWS
+resources automatically. See the [AWS deployment guide](docs/deployment.md)
+before creating anything, especially its current Free Plan and cost checks.
