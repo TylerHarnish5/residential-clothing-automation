@@ -15,3 +15,8 @@ lightweight operational frontend.
 GitHub Actions runs Ruff, PostgreSQL-backed tests, and migration checks on
 every push and pull request. See [CI documentation](docs/ci.md) for details
 and local commands.
+
+## Containerized local setup
+
+Docker Compose can start the FastAPI application and a separate local
+PostgreSQL database with one command. See [containerization documentation](docs/containerization.md).

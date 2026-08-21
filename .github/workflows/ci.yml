@@ -13,6 +13,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  container:
+    name: Build container image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Build application image
+        run: docker build --tag residential-clothing-automation:test .
+
   lint:
     name: Lint Python
     runs-on: ubuntu-latest

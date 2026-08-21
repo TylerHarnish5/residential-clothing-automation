@@ -7,7 +7,9 @@ It can also be started manually from the repository's **Actions** tab.
 
 1. **Lint Python:** Ruff checks the application and test code for import,
    syntax, and common error issues.
-2. **Test with PostgreSQL:** CI starts a temporary PostgreSQL 16 service,
+2. **Build container image:** Docker builds the application image, confirming
+   that the Dockerfile is valid.
+3. **Test with PostgreSQL:** CI starts a temporary PostgreSQL 16 service,
    applies the Alembic migrations, runs the full test suite with
    `RUN_POSTGRES_TESTS=1`, and verifies that no migration is missing.
 
