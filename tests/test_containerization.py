@@ -28,3 +28,13 @@ def test_dockerignore_excludes_local_secrets_and_build_artifacts() -> None:
     assert ".env" in dockerignore
     assert ".git/" in dockerignore
     assert ".pytest_tmp/" in dockerignore
+
+
+def test_aws_compose_uses_rds_environment_and_explicit_migrations() -> None:
+    compose = (PROJECT_ROOT / "compose.aws.yaml").read_text(encoding="utf-8")
+
+    assert "/opt/residential-clothing/app.env" in compose
+    assert '"python", "-m", "alembic", "upgrade", "head"' in compose
+    assert '"80:8000"' in compose
+    assert "image: postgres" not in compose
+    assert "DATABASE_URL=" not in compose
